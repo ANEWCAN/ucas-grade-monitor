@@ -1,0 +1,25 @@
+UCAS Score Query Android
+Copyright 2026 UCAS Score Query contributors
+
+This project is licensed under the Mozilla Public License 2.0.
+
+The UCAS SEP/JWXK authentication and score-query flow was independently
+reimplemented with reference to the public project:
+
+  wirsbf/traintime_pda_ucas
+  https://github.com/wirsbf/traintime_pda_ucas
+  License: Mozilla Public License 2.0
+
+Earlier development also used the user-provided Python UCAS score-query
+implementation as a behavioral reference. Modified and newly created files in
+this repository are distributed under MPL-2.0 unless otherwise stated.
+
+Gradle Wrapper scripts and the Gradle Wrapper JAR are provided by the Gradle
+project under the Apache License 2.0. Their original copyright and SPDX notices
+are retained in the scripts and binary.
+
+"UCAS" and the name "中国科学院大学" may be trademarks or identifiers of the
+University of Chinese Academy of Sciences. This is an unofficial community
+project and is not endorsed by, affiliated with, or operated by UCAS or
+CSTCloud. The application icon is an original minimalist design and is not the
+official UCAS emblem.
