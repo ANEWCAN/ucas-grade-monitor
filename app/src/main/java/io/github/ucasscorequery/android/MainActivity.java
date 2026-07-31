@@ -7,16 +7,26 @@ package io.github.ucasscorequery.android;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.NotificationManager;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -25,6 +35,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -89,12 +100,27 @@ public final class MainActivity extends Activity {
     private View queryPage;
     private View settingsPage;
     private TextView runStatus;
+    private ProgressBar queryProgressBar;
+    private long lastUiRepairAt;
     private TextView heroStatus;
     private TextView heroTime;
     private TextView heroCount;
     private LinearLayout autoSummaryBody;
     private LinearLayout manualSummaryBody;
     private LinearLayout scoreListContainer;
+    private TextView nextRunCountdown;
+    private TextView nextRunClock;
+    private TextView backgroundProtectionStatus;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable countdownTicker = new Runnable() {
+        @Override
+        public void run() {
+            updateCountdown();
+            updateBackgroundProtection();
+            updateLiveProgress();
+            uiHandler.postDelayed(this, 1_000L);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -111,25 +137,51 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (AppPrefs.loadSettings(this).autoEnabled) {
+            Scheduler.ensureHealthy(this, true);
+        }
         if (autoSummaryBody != null) refreshRecords();
+        uiHandler.removeCallbacks(countdownTicker);
+        uiHandler.post(countdownTicker);
+    }
+
+    @Override
+    protected void onPause() {
+        uiHandler.removeCallbacks(countdownTicker);
+        super.onPause();
     }
 
     private void configureWindow() {
         Window window = getWindow();
-        window.setStatusBarColor(NAVY);
+        window.setStatusBarColor(Color.WHITE);
         window.setNavigationBarColor(Color.WHITE);
-        if (android.os.Build.VERSION.SDK_INT >= 26) {
-            window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        window.getDecorView().setSystemUiVisibility(flags);
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false);
         }
     }
 
 
     private View buildContent() {
-        LinearLayout shell = new LinearLayout(this);
+        final LinearLayout shell = new LinearLayout(this);
         shell.setOrientation(LinearLayout.VERTICAL);
-        shell.setBackgroundColor(PAGE_BG);
+        shell.setBackgroundColor(Color.WHITE);
+        shell.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
+                int top = Build.VERSION.SDK_INT >= 30
+                        ? insets.getSystemWindowInsetTop() : 0;
+                int bottom = Build.VERSION.SDK_INT >= 30
+                        ? insets.getSystemWindowInsetBottom() : 0;
+                view.setPadding(0, top + dp(14), 0, bottom);
+                return insets;
+            }
+        });
 
         FrameLayout pageHost = new FrameLayout(this);
+        pageHost.setBackgroundColor(PAGE_BG);
         resultsPage = buildResultsPage();
         queryPage = buildQueryPage();
         settingsPage = buildSettingsPage();
@@ -143,6 +195,7 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         shell.addView(buildBottomNavigation(), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(68)));
+        shell.requestApplyInsets();
         return shell;
     }
 
@@ -175,6 +228,7 @@ public final class MainActivity extends Activity {
         header.addView(subtitle);
         root.addView(header);
 
+        root.addView(buildCountdownCard());
         root.addView(buildQueryAction());
         root.addView(buildQueryOverview());
         return scroll;
@@ -198,6 +252,7 @@ public final class MainActivity extends Activity {
         header.addView(subtitle);
         root.addView(header);
 
+        root.addView(buildBackgroundProtection());
         root.addView(buildAutoSettings());
         root.addView(buildAccountSettings());
 
@@ -340,6 +395,92 @@ public final class MainActivity extends Activity {
     }
 
 
+    private View buildCountdownCard() {
+        LinearLayout card = card();
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text("下次自动查询", 17, true);
+        title.setTextColor(NAVY);
+        header.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        header.addView(chip("实时倒计时", BLUE, BLUE_LIGHT));
+        card.addView(header);
+
+        nextRunCountdown = text("未启用", 25, true);
+        nextRunCountdown.setTextColor(BLUE);
+        nextRunCountdown.setGravity(Gravity.CENTER);
+        nextRunCountdown.setPadding(0, dp(14), 0, dp(4));
+        card.addView(nextRunCountdown);
+
+        nextRunClock = text("在设置页启用自动查询后显示", 12, false);
+        nextRunClock.setTextColor(TEXT_MUTED);
+        nextRunClock.setGravity(Gravity.CENTER);
+        card.addView(nextRunClock);
+        return card;
+    }
+
+    private View buildBackgroundProtection() {
+        LinearLayout card = card();
+        card.addView(sectionTitle("后台运行保障"));
+        TextView intro = text(
+                "启用后会显示常驻通知，并使用唤醒闹钟与系统任务双重保障熄屏查询。",
+                13, false);
+        intro.setTextColor(TEXT_MUTED);
+        intro.setLineSpacing(0, 1.15f);
+        card.addView(intro);
+
+        backgroundProtectionStatus = infoBox(
+                "正在检查后台权限…", BLUE, BLUE_LIGHT);
+        LinearLayout.LayoutParams statusParams = matchWrap();
+        statusParams.setMargins(0, dp(10), 0, dp(10));
+        card.addView(backgroundProtectionStatus, statusParams);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button exactButton = button("精确闹钟", false);
+        Button batteryButton = button("电池放行", false);
+        Button notificationButton = button("通知权限", false);
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        left.setMargins(0, 0, dp(4), 0);
+        actions.addView(exactButton, left);
+        LinearLayout.LayoutParams middle = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        middle.setMargins(dp(4), 0, dp(4), 0);
+        actions.addView(batteryButton, middle);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        right.setMargins(dp(4), 0, 0, 0);
+        actions.addView(notificationButton, right);
+        card.addView(actions);
+
+        exactButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                requestExactAlarmAccess();
+            }
+        });
+        batteryButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                requestBatteryOptimizationExemption();
+            }
+        });
+        notificationButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                requestNotificationAccess();
+            }
+        });
+
+        TextView warning = text(
+                "说明：从系统设置中“强行停止”应用后，Android 会禁止任何闹钟、任务和服务自行恢复，必须重新打开应用；普通划掉后台不会取消自动查询。",
+                12, false);
+        warning.setTextColor(ORANGE);
+        warning.setLineSpacing(0, 1.18f);
+        warning.setPadding(0, dp(10), 0, 0);
+        card.addView(warning);
+        return card;
+    }
+
     private View buildQueryAction() {
         LinearLayout card = card();
         LinearLayout heading = new LinearLayout(this);
@@ -372,7 +513,17 @@ public final class MainActivity extends Activity {
             }
         });
 
-        runStatus = text("点击按钮后会完成登录、验证码识别和成绩查询。", 13, false);
+        queryProgressBar = new ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        queryProgressBar.setMax(100);
+        queryProgressBar.setProgress(0);
+        queryProgressBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
+        progressParams.setMargins(0, dp(12), 0, 0);
+        card.addView(queryProgressBar, progressParams);
+
+        runStatus = text("点击按钮后会逐步显示登录、验证码识别和成绩读取进度。", 13, false);
         runStatus.setTextColor(TEXT_MUTED);
         runStatus.setPadding(dp(2), dp(10), dp(2), 0);
         runStatus.setLineSpacing(0, 1.15f);
@@ -473,7 +624,7 @@ public final class MainActivity extends Activity {
         card.addView(retryInput, matchWrap());
 
         TextView reliability = infoBox(
-                "稳定性说明：验证码请求已恢复为此前可用的兼容格式；HTTP 422、网络超时等瞬时错误会重试。大模型单次最长等待 300 秒。",
+                "稳定性说明：自动查询使用前台常驻服务、熄屏唤醒闹钟和持久化系统任务三重保障；HTTP 422、网络超时等瞬时错误仍会重试。",
                 BLUE, BLUE_LIGHT);
         LinearLayout.LayoutParams infoParams = matchWrap();
         infoParams.setMargins(0, dp(10), 0, dp(8));
@@ -496,7 +647,7 @@ public final class MainActivity extends Activity {
         card.addView(notifyGroup);
 
         TextView scheduleNote = text(
-                "Android 后台任务受省电、待机和网络状态影响，实际执行时间可能晚于设定间隔。",
+                "未授予精确闹钟权限或未关闭电池优化时，部分品牌手机仍可能延后执行。",
                 12, false);
         scheduleNote.setTextColor(TEXT_MUTED);
         scheduleNote.setPadding(0, dp(8), 0, 0);
@@ -572,11 +723,14 @@ public final class MainActivity extends Activity {
         try {
             AppPrefs.saveSettings(this, settings);
             Scheduler.apply(this, settings);
+            updateCountdown();
+            updateBackgroundProtection();
             if (showToast) {
                 String message = settings.autoEnabled
                         ? "设置已保存：每 "
                             + INTERVAL_LABELS[findIntervalIndex(settings.intervalMinutes)]
-                            + " 查询一次，整轮失败最多重试 " + settings.retryCount + " 次。"
+                            + " 查询一次，整轮失败最多重试 " + settings.retryCount
+                            + " 次。后台常驻服务已启动。"
                         : "设置已保存，自动查询当前未启用。";
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             }
@@ -599,16 +753,28 @@ public final class MainActivity extends Activity {
         if (!saveSettings(false)) return;
         queryButton.setEnabled(false);
         queryButton.setText("查询中…");
-        runStatus.setText("正在登录 SEP、识别验证码并查询成绩，请保持网络连接。 ");
-        runStatus.setTextColor(BLUE);
         final long started = System.currentTimeMillis();
+        AppPrefs.saveQueryProgress(this, new QueryProgress(
+                true, false, 1, "手动查询启动", "正在准备查询会话",
+                0, Math.max(1, settings.retryCount + 1), started, started));
+        updateLiveProgress();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 QueryRecord record;
                 try {
                     QueryRunner.Result result = QueryRunner.execute(
-                            settings.credentials, settings.retryCount);
+                            settings.credentials, settings.retryCount,
+                            new QueryProgressListener() {
+                                @Override
+                                public void onProgress(int percent, String stage, String detail,
+                                                       int attempt, int maxAttempts) {
+                                    AppPrefs.saveQueryProgress(MainActivity.this,
+                                            new QueryProgress(true, false, percent, stage, detail,
+                                                    attempt, maxAttempts, started,
+                                                    System.currentTimeMillis()));
+                                }
+                            });
                     List<Score> scores = result.scores;
                     String retrySummary = result.attempts > 1
                             ? "，第 " + result.attempts + " 次整轮尝试成功（已重试 "
@@ -627,6 +793,7 @@ public final class MainActivity extends Activity {
                             new ArrayList<Score>(), new ArrayList<Score>());
                 }
                 AppPrefs.saveRecord(MainActivity.this, "last_manual_result", record);
+                AppPrefs.clearQueryProgress(MainActivity.this);
                 final QueryRecord finalRecord = record;
                 runOnUiThread(new Runnable() {
                     @Override
@@ -801,11 +968,11 @@ public final class MainActivity extends Activity {
         topRow.addView(titleBlock, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView scoreView = text(emptyAsDash(score.score), 23, true);
+        TextView scoreView = text(emptyAsDash(score.score), 17, true);
         scoreView.setTextColor(scoreColor(score.score));
         scoreView.setGravity(Gravity.CENTER);
-        scoreView.setMinWidth(dp(62));
-        scoreView.setPadding(dp(10), dp(8), dp(10), dp(8));
+        scoreView.setMinWidth(dp(50));
+        scoreView.setPadding(dp(8), dp(5), dp(8), dp(5));
         scoreView.setBackground(roundRect(
                 scoreBackground(score.score), 13, 0, Color.TRANSPARENT));
         LinearLayout.LayoutParams scoreParams = new LinearLayout.LayoutParams(
@@ -909,6 +1076,162 @@ public final class MainActivity extends Activity {
         box.addView(titleView);
         box.addView(subtitleView);
         return box;
+    }
+
+    private void updateCountdown() {
+        if (nextRunCountdown == null || nextRunClock == null) return;
+        AppSettings settings = AppPrefs.loadSettings(this);
+        if (!settings.autoEnabled) {
+            nextRunCountdown.setText("未启用");
+            nextRunCountdown.setTextColor(TEXT_MUTED);
+            nextRunClock.setText("请在设置页开启自动查询");
+            return;
+        }
+        long next = AppPrefs.getNextRunAt(this);
+        if (next <= 0L) {
+            nextRunCountdown.setText("正在安排");
+            nextRunCountdown.setTextColor(BLUE);
+            nextRunClock.setText("后台服务正在计算下次执行时间");
+            return;
+        }
+        long remaining = next - System.currentTimeMillis();
+        if (remaining <= 0L) {
+            QueryProgress progress = AppPrefs.loadQueryProgress(this);
+            nextRunCountdown.setText(progress.active && progress.automatic
+                    ? "正在自动查询" : "正在强制触发");
+            nextRunCountdown.setTextColor(ORANGE);
+            long now = System.currentTimeMillis();
+            if (!progress.active && now - lastUiRepairAt > 10_000L) {
+                lastUiRepairAt = now;
+                Scheduler.ensureHealthy(this, true);
+            }
+        } else {
+            nextRunCountdown.setText(formatRemaining(remaining));
+            nextRunCountdown.setTextColor(BLUE);
+        }
+        nextRunClock.setText("预计 " + new SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date(next)));
+    }
+
+    private void updateLiveProgress() {
+        if (runStatus == null || queryProgressBar == null || queryButton == null) return;
+        QueryProgress progress = AppPrefs.loadQueryProgress(this);
+        if (!progress.active) {
+            queryProgressBar.setVisibility(View.GONE);
+            queryButton.setEnabled(true);
+            queryButton.setText("查询最新成绩");
+            return;
+        }
+        queryProgressBar.setVisibility(View.VISIBLE);
+        queryProgressBar.setIndeterminate(progress.percent <= 0 || progress.percent >= 100);
+        if (!queryProgressBar.isIndeterminate()) queryProgressBar.setProgress(progress.percent);
+        String attempt = progress.attempt > 0 && progress.maxAttempts > 0
+                ? "（整轮 " + progress.attempt + "/" + progress.maxAttempts + "）" : "";
+        String source = progress.automatic ? "自动查询" : "手动查询";
+        runStatus.setText(source + " · " + progress.stage + attempt
+                + "\n" + progress.detail + "\n进度 " + progress.percent + "%");
+        runStatus.setTextColor(BLUE);
+        queryButton.setEnabled(false);
+        queryButton.setText(progress.automatic ? "自动查询进行中" : "查询中…");
+    }
+
+    private void updateBackgroundProtection() {
+        if (backgroundProtectionStatus == null) return;
+        AppSettings settings = AppPrefs.loadSettings(this);
+        boolean exact = Scheduler.canScheduleExactAlarms(this);
+        PowerManager manager = (PowerManager) getSystemService(POWER_SERVICE);
+        boolean batteryAllowed = manager != null
+                && manager.isIgnoringBatteryOptimizations(getPackageName());
+        NotificationManager notificationManager =
+                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        boolean notificationsAllowed = notificationManager == null
+                || Build.VERSION.SDK_INT < 24 || notificationManager.areNotificationsEnabled();
+        long heartbeat = AppPrefs.getServiceHeartbeat(this);
+        boolean serviceAlive = settings.autoEnabled
+                && System.currentTimeMillis() - heartbeat < 90_000L;
+        String status = "常驻服务：" + (serviceAlive ? "运行中" : settings.autoEnabled ? "正在自动修复" : "未启用")
+                + "\n精确闹钟：" + (exact ? "已授权" : "未授权，可靠性会明显下降")
+                + "\n电池优化：" + (batteryAllowed ? "已放行" : "受系统省电限制")
+                + "\n最近调度：" + emptyAsDash(AppPrefs.getLastSchedulerEvent(this));
+        String startError = AppPrefs.getServiceStartError(this);
+        if (!startError.isEmpty()) status += "\n服务诊断：" + startError;
+        if (settings.autoEnabled && !serviceAlive
+                && System.currentTimeMillis() - lastUiRepairAt > 10_000L) {
+            lastUiRepairAt = System.currentTimeMillis();
+            Scheduler.ensureHealthy(this, true);
+        }
+        backgroundProtectionStatus.setText(status);
+        int foreground = serviceAlive && exact && batteryAllowed && notificationsAllowed ? GREEN : ORANGE;
+        int background = serviceAlive && exact && batteryAllowed && notificationsAllowed ? GREEN_LIGHT : ORANGE_LIGHT;
+        backgroundProtectionStatus.setTextColor(foreground);
+        backgroundProtectionStatus.setBackground(roundRect(
+                background, 12, 0, Color.TRANSPARENT));
+    }
+
+    private void requestExactAlarmAccess() {
+        if (Build.VERSION.SDK_INT < 31 || Scheduler.canScheduleExactAlarms(this)) {
+            Toast.makeText(this, "当前设备已允许精确闹钟。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法打开精确闹钟设置：" + cleanError(error),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void requestBatteryOptimizationExemption() {
+        PowerManager manager = (PowerManager) getSystemService(POWER_SERVICE);
+        if (manager != null && manager.isIgnoringBatteryOptimizations(getPackageName())) {
+            Toast.makeText(this, "当前应用已不受电池优化限制。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception first) {
+            try {
+                startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (Exception second) {
+                Toast.makeText(this, "无法打开电池优化设置：" + cleanError(second),
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private static String formatRemaining(long millis) {
+        long totalSeconds = Math.max(0L, millis / 1000L);
+        long days = totalSeconds / 86_400L;
+        long hours = (totalSeconds % 86_400L) / 3_600L;
+        long minutes = (totalSeconds % 3_600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (days > 0L) {
+            return String.format(Locale.CHINA, "%d天 %02d:%02d:%02d",
+                    days, hours, minutes, seconds);
+        }
+        return String.format(Locale.CHINA, "%02d:%02d:%02d",
+                hours, minutes, seconds);
+    }
+
+    private void requestNotificationAccess() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 101);
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            startActivity(intent);
+        } catch (Exception error) {
+            Toast.makeText(this, "无法打开通知设置：" + cleanError(error),
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void requestNotificationPermission() {

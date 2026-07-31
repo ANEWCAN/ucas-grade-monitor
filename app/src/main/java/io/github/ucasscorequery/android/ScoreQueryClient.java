@@ -56,10 +56,16 @@ final class ScoreQueryClient {
     };
 
     private final Credentials credentials;
+    private final QueryProgressListener progressListener;
     private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
 
     ScoreQueryClient(Credentials credentials) {
+        this(credentials, null);
+    }
+
+    ScoreQueryClient(Credentials credentials, QueryProgressListener progressListener) {
         this.credentials = credentials;
+        this.progressListener = progressListener;
     }
 
     List<Score> queryScores() throws Exception {
@@ -69,6 +75,7 @@ final class ScoreQueryClient {
         for (int index = 0; index < candidates.size(); index++) {
             String username = candidates.get(index);
             clearCookies();
+            emit(8, "准备身份认证", "正在尝试账号格式 " + (index + 1) + "/" + candidates.size());
             try {
                 loginSep(username);
                 loginJwxk();
@@ -89,6 +96,7 @@ final class ScoreQueryClient {
         if (validateSepSession()) return;
         String lastError = "SEP 登录失败";
         for (int attempt = 1; attempt <= 5; attempt++) {
+            emit(12, "连接 SEP", "正在加载统一身份认证页面（验证码尝试 " + attempt + "/5）");
             Response loginPage = request("GET", SEP_BASE, null, null, true, null);
             String page = loginPage.text();
             String publicKey = findFirst(page, "jsePubKey\\s*=\\s*[\"']([^\"']+)[\"']");
@@ -97,10 +105,13 @@ final class ScoreQueryClient {
             boolean captchaRequired = page.contains("certCode1") || page.contains("name=\"certCode\"") || page.contains("name='certCode'");
             String captcha = "";
             if (captchaRequired) {
+                emit(22, "获取验证码", "正在下载新的登录验证码");
                 Response image = request("GET", SEP_BASE + "/changePic?_=" + System.currentTimeMillis(), null, null, true,
                         Collections.singletonMap("Referer", SEP_BASE));
                 if (image.body.length == 0) throw new Exception("验证码图片为空。");
+                emit(30, "识别验证码", "正在调用大模型识别 4 位验证码");
                 captcha = solveCaptcha(image.body);
+                emit(42, "验证码已识别", "识别结果已取得，准备提交登录");
             }
             Map<String, String> form = new LinkedHashMap<String, String>();
             form.put("userName", username);
@@ -111,6 +122,7 @@ final class ScoreQueryClient {
             Map<String, String> headers = new HashMap<String, String>();
             headers.put("Origin", SEP_BASE);
             headers.put("Referer", SEP_BASE);
+            emit(48, "提交 SEP 登录", "正在加密密码并建立登录会话");
             Response response = request("POST", SEP_BASE + "/slogin", formEncode(form),
                     "application/x-www-form-urlencoded; charset=UTF-8", true, headers);
             String body = response.text();
@@ -122,7 +134,11 @@ final class ScoreQueryClient {
                 sleep(attempt);
                 continue;
             }
-            if (validateSepSession() || isAuthenticatedSepResponse(response)) return;
+            emit(57, "验证 SEP 会话", "正在确认统一身份认证是否成功");
+            if (validateSepSession() || isAuthenticatedSepResponse(response)) {
+                emit(62, "SEP 登录成功", "统一身份认证会话已建立");
+                return;
+            }
             String error = extractLoginError(body);
             lastError = error == null
                     ? "登录后未能建立有效 SEP 会话（" + sessionDiagnostics(response) + "）"
@@ -148,6 +164,7 @@ final class ScoreQueryClient {
     }
 
     private void loginJwxk() throws Exception {
+        emit(66, "进入教务系统", "正在从 SEP 获取教务系统入口");
         Response menu = request("GET", SEP_BASE + "/businessMenu", null, null, true, null);
         String portalUrl = findPortalLink(menu.text());
         if (portalUrl == null) throw new Exception("未能从 SEP 门户找到选课/我的课程入口。");
@@ -160,6 +177,7 @@ final class ScoreQueryClient {
         if (identity == null) throw new Exception("JWXK 跳转地址中没有 Identity 参数。");
         String targetPath = "/courseManage/selectedCourse";
         String loginUrl = JWXK_BASE + "/login?Identity=" + identity + "&roleId=xs&fromUrl=1&toUrl=" + encodeToUrl(targetPath);
+        emit(73, "建立 JWXK 会话", "正在使用 Identity 完成教务系统认证");
         request("GET", loginUrl, null, null, true, null);
         Response verify = request("GET", JWXK_BASE + targetPath, null, null, false, null);
         if (verify.code >= 300 && verify.code < 400) {
@@ -176,15 +194,24 @@ final class ScoreQueryClient {
     }
 
     private List<Score> fetchScores() throws Exception {
+        emit(84, "获取成绩页面", "正在请求全部研究生成绩");
         Response response = request("GET", JWXK_BASE + "/score/yjs/all", null, null, true, null);
         if (response.code != 200) throw new Exception("成绩页面请求失败，HTTP " + response.code + "。");
         String body = response.text();
         if (!(body.contains("课程成绩") || body.contains("学分") || (body.contains("成绩") && body.toLowerCase(Locale.ROOT).contains("table")))) {
             throw new Exception("成绩页面内容异常，可能是会话失效或教务页面已改版。");
         }
+        emit(93, "解析课程成绩", "正在整理课程、学分、学期与成绩信息");
         List<Score> scores = parseScores(body);
         if (scores.isEmpty()) throw new Exception("已访问成绩页面，但没有解析到成绩。可能当前暂无成绩，或表格结构已变化。");
+        emit(98, "成绩解析完成", "共解析到 " + scores.size() + " 门课程");
         return scores;
+    }
+
+    private void emit(int percent, String stage, String detail) {
+        if (progressListener != null) {
+            progressListener.onProgress(percent, stage, detail, 0, 0);
+        }
     }
 
     private static List<String> usernameCandidates(String input) {
@@ -271,6 +298,7 @@ final class ScoreQueryClient {
         Exception lastError = null;
         for (int attempt = 1; attempt <= LLM_TRANSIENT_RETRIES; attempt++) {
             try {
+                emit(31, "识别验证码", "大模型识别请求 " + attempt + "/" + LLM_TRANSIENT_RETRIES);
                 Response response = requestCaptchaRecognition(image);
                 if (response.code < 200 || response.code >= 300) {
                     String body = limit(response.text(), 220);

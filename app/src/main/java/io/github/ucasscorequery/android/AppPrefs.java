@@ -52,6 +52,108 @@ final class AppPrefs {
                 .apply();
     }
 
+
+    static long getNextRunAt(Context context) {
+        return prefs(context).getLong("next_run_at", 0L);
+    }
+
+    static void setNextRunAt(Context context, long value) {
+        prefs(context).edit().putLong("next_run_at", value).apply();
+    }
+
+    static void clearNextRunAt(Context context) {
+        prefs(context).edit().remove("next_run_at").apply();
+    }
+
+    static void setServiceHeartbeat(Context context, long value) {
+        prefs(context).edit().putLong("service_heartbeat", value).apply();
+    }
+
+    static long getServiceHeartbeat(Context context) {
+        return prefs(context).getLong("service_heartbeat", 0L);
+    }
+
+    static void setAutoQueryRunning(Context context, boolean running) {
+        prefs(context).edit()
+                .putBoolean("auto_query_running", running)
+                .putLong("auto_query_running_since", running ? System.currentTimeMillis() : 0L)
+                .apply();
+    }
+
+    static boolean isAutoQueryRunning(Context context) {
+        return prefs(context).getBoolean("auto_query_running", false);
+    }
+
+    static void saveQueryProgress(Context context, QueryProgress progress) {
+        SharedPreferences.Editor editor = prefs(context).edit()
+                .putBoolean("progress_active", progress.active)
+                .putBoolean("progress_automatic", progress.automatic)
+                .putInt("progress_percent", progress.percent)
+                .putString("progress_stage", progress.stage)
+                .putString("progress_detail", progress.detail)
+                .putInt("progress_attempt", progress.attempt)
+                .putInt("progress_max_attempts", progress.maxAttempts)
+                .putLong("progress_started_at", progress.startedAt)
+                .putLong("progress_updated_at", progress.updatedAt);
+        editor.commit();
+    }
+
+    static QueryProgress loadQueryProgress(Context context) {
+        SharedPreferences p = prefs(context);
+        QueryProgress value = new QueryProgress(
+                p.getBoolean("progress_active", false),
+                p.getBoolean("progress_automatic", false),
+                p.getInt("progress_percent", 0),
+                p.getString("progress_stage", ""),
+                p.getString("progress_detail", ""),
+                p.getInt("progress_attempt", 0),
+                p.getInt("progress_max_attempts", 0),
+                p.getLong("progress_started_at", 0L),
+                p.getLong("progress_updated_at", 0L));
+        if (value.active && value.updatedAt > 0L
+                && System.currentTimeMillis() - value.updatedAt > 20L * 60_000L) {
+            clearQueryProgress(context);
+            return QueryProgress.idle();
+        }
+        return value;
+    }
+
+    static void clearQueryProgress(Context context) {
+        prefs(context).edit()
+                .putBoolean("progress_active", false)
+                .putInt("progress_percent", 0)
+                .putString("progress_stage", "")
+                .putString("progress_detail", "")
+                .putInt("progress_attempt", 0)
+                .putInt("progress_max_attempts", 0)
+                .putLong("progress_started_at", 0L)
+                .putLong("progress_updated_at", System.currentTimeMillis())
+                .commit();
+    }
+
+    static void setLastSchedulerEvent(Context context, String event) {
+        prefs(context).edit()
+                .putString("last_scheduler_event", event == null ? "" : event)
+                .putLong("last_scheduler_event_at", System.currentTimeMillis())
+                .commit();
+    }
+
+    static String getLastSchedulerEvent(Context context) {
+        return prefs(context).getString("last_scheduler_event", "");
+    }
+
+    static long getLastSchedulerEventAt(Context context) {
+        return prefs(context).getLong("last_scheduler_event_at", 0L);
+    }
+
+    static void setServiceStartError(Context context, String value) {
+        prefs(context).edit().putString("service_start_error", value == null ? "" : value).commit();
+    }
+
+    static String getServiceStartError(Context context) {
+        return prefs(context).getString("service_start_error", "");
+    }
+
     static void saveRecord(Context context, String key, QueryRecord record) {
         try {
             JSONObject obj = new JSONObject();
