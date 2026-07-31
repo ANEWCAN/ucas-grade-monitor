@@ -5,7 +5,6 @@
 
   [English](README.en.md) · [构建说明](docs/BUILD.md) · [安全政策](SECURITY.md) · [隐私说明](PRIVACY.md)
 
-  ![Android CI](https://github.com/ANEWCAN/ucas-score-query-android/actions/workflows/android-ci.yml/badge.svg)
   ![License](https://img.shields.io/badge/license-MPL--2.0-blue)
   ![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84)
 </div>
@@ -23,7 +22,10 @@
 - 保存最近一次手动查询、自动查询与成功查询结果；
 - 支持 0、1、2、3、5 次整轮失败重试；
 - 对网络超时、HTTP 422 stream timeout、429 和常见 5xx 错误进行重试；
-- 手机重启或应用升级后恢复自动查询；
+- 熄屏时通过唤醒闹钟执行查询，并使用持久化系统任务兜底；
+- 启用自动查询后显示低优先级常驻通知，应用界面退出后仍保持运行；
+- 显示距离下次自动查询的实时倒计时；
+- 手机重启、应用升级或进程重建后恢复自动查询；
 - 账号、密码与 Token 使用 Android Keystore + AES-256-GCM 加密保存；
 - 全中文应用界面，无广告、无统计 SDK、无项目自建服务器。
 
@@ -45,20 +47,20 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/ANEWCAN/ucas-score-query-android.git
-cd ucas-score-query-android
+git clone https://github.com/ANEWCAN/ucas-grade-monitor.git
+cd ucas-grade-monitor
 ```
 
 在 Windows 中：
 
 ```powershell
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+.\gradlew.bat assembleDebug
 ```
 
 在 macOS/Linux 中：
 
 ```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew assembleDebug
 ```
 
 调试 APK 位于：
@@ -80,8 +82,10 @@ app/src/main/java/io/github/ucasscorequery/android/
 ├── MainActivity.java          # 三页面原生 Android UI
 ├── ScoreQueryClient.java      # SEP/JWXK 登录、验证码和成绩解析
 ├── QueryRunner.java           # 查询重试策略
-├── QueryJobService.java       # 后台定时查询
-├── Scheduler.java             # JobScheduler 调度
+├── AutoQueryService.java      # 前台常驻服务与熄屏查询
+├── AlarmReceiver.java         # 唤醒闹钟接收器
+├── QueryJobService.java       # 持久化系统任务兜底
+├── Scheduler.java             # 闹钟、任务与恢复调度
 ├── AppPrefs.java              # 设置、记录和成绩基线
 ├── SecureStore.java           # Android Keystore 加密
 └── NotificationHelper.java    # 本地通知
@@ -98,7 +102,7 @@ app/src/main/java/io/github/ucasscorequery/android/
 欢迎提交 Issue 和 Pull Request。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，并确保：
 
 ```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew assembleDebug
 ```
 
 能够通过。

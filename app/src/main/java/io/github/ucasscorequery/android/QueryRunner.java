@@ -13,24 +13,49 @@ final class QueryRunner {
     private QueryRunner() {}
 
     static Result execute(Credentials credentials, int retryCount) throws Exception {
+        return execute(credentials, retryCount, null);
+    }
+
+    static Result execute(Credentials credentials, int retryCount,
+                          QueryProgressListener listener) throws Exception {
         int retries = Math.max(0, Math.min(5, retryCount));
         int maxAttempts = retries + 1;
         Exception lastError = null;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            publish(listener, 2, "准备查询",
+                    "正在创建第 " + attempt + " 次查询会话", attempt, maxAttempts);
             try {
-                List<Score> scores = new ScoreQueryClient(credentials).queryScores();
+                final int currentAttempt = attempt;
+                List<Score> scores = new ScoreQueryClient(credentials,
+                        new QueryProgressListener() {
+                            @Override
+                            public void onProgress(int percent, String stage, String detail,
+                                                   int ignoredAttempt, int ignoredMaxAttempts) {
+                                publish(listener, percent, stage, detail,
+                                        currentAttempt, maxAttempts);
+                            }
+                        }).queryScores();
+                publish(listener, 100, "查询完成",
+                        "已获取 " + scores.size() + " 门课程", attempt, maxAttempts);
                 return new Result(scores, attempt);
             } catch (Exception error) {
                 lastError = error;
                 if (isNonRetryable(error)) {
+                    publish(listener, 100, "查询终止", clean(error), attempt, maxAttempts);
                     throw new Exception("不可重试错误，已停止：" + clean(error), error);
                 }
                 if (attempt >= maxAttempts) break;
-                sleepBeforeRetry(attempt, error);
+                long wait = retryDelayMillis(attempt, error);
+                publish(listener, 5, "等待重试",
+                        "本次失败：" + clean(error) + "；将在 "
+                                + Math.max(1L, wait / 1000L) + " 秒后重试",
+                        attempt, maxAttempts);
+                sleep(wait);
             }
         }
 
+        publish(listener, 100, "查询失败", clean(lastError), maxAttempts, maxAttempts);
         throw new Exception("已尝试 " + maxAttempts + " 次仍失败：" + clean(lastError), lastError);
     }
 
@@ -58,19 +83,28 @@ final class QueryRunner {
                 || message.contains("Token 无效");
     }
 
-    private static void sleepBeforeRetry(int failedAttempt, Throwable error) {
+    private static long retryDelayMillis(int failedAttempt, Throwable error) {
         String message = allMessages(error).toLowerCase(Locale.ROOT);
-        long delayMillis;
         if (message.contains("stream timeout") || message.contains("http 422")) {
-            long[] streamDelays = {12_000L, 25_000L, 45_000L, 60_000L, 60_000L};
-            delayMillis = streamDelays[Math.min(Math.max(failedAttempt - 1, 0), streamDelays.length - 1)];
-        } else {
-            delayMillis = Math.min(5_000L * (1L << Math.min(failedAttempt - 1, 3)), 40_000L);
+            long[] delays = {12_000L, 25_000L, 45_000L, 60_000L, 60_000L};
+            return delays[Math.min(Math.max(failedAttempt - 1, 0), delays.length - 1)];
         }
+        return Math.min(5_000L * (1L << Math.min(failedAttempt - 1, 3)), 40_000L);
+    }
+
+    private static void sleep(long delayMillis) {
         try {
             Thread.sleep(delayMillis);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void publish(QueryProgressListener listener, int percent,
+                                String stage, String detail,
+                                int attempt, int maxAttempts) {
+        if (listener != null) {
+            listener.onProgress(percent, stage, detail, attempt, maxAttempts);
         }
     }
 

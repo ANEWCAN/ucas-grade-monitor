@@ -5,7 +5,6 @@
 
   [简体中文](README.md) · [Build](docs/BUILD.md) · [Security](SECURITY.md) · [Privacy](PRIVACY.md)
 
-  ![Android CI](https://github.com/ANEWCAN/ucas-score-query-android/actions/workflows/android-ci.yml/badge.svg)
   ![License](https://img.shields.io/badge/license-MPL--2.0-blue)
   ![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84)
 </div>
@@ -29,9 +28,9 @@
 Requirements: JDK 17, Android SDK 36, and an Android 8.0+ device.
 
 ```bash
-git clone https://github.com/ANEWCAN/ucas-score-query-android.git
-cd ucas-score-query-android
-./gradlew testDebugUnitTest lintDebug assembleDebug
+git clone https://github.com/ANEWCAN/ucas-grade-monitor.git
+cd ucas-grade-monitor
+./gradlew assembleDebug
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
@@ -39,7 +38,7 @@ See [docs/BUILD.md](docs/BUILD.md) for Android Studio, VS Code, and command-line
 
 ## Release signing
 
-Release signing keys are never committed. The tag-based GitHub Release workflow reads signing material from repository secrets. See [docs/RELEASING.md](docs/RELEASING.md).
+GitHub Actions are disabled by default. Build the APK locally and upload it manually to GitHub Releases.
 
 ## License and attribution
 
